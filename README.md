@@ -20,7 +20,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
   Running 2 kms
   Listening podcast
   ```
-- `/done YYYY-MM-DD TASK_NUMBER proof text` – Mark a task done with proof or a photo (rejected after the deadline).
+- `/done YYYY-MM-DD TASK_NUMBER proof text` – Mark a task done with proof or attach a photo with the command in the caption (rejected after the deadline).
 - `/status YYYY-MM-DD` – Show task completion status and daily result.
 - `/score` – Show total goals and penalties.
 
@@ -39,4 +39,5 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 ## Notes
 - Deadlines are interpreted in **UTC**.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.
-- The bot can be added to groups; it tracks tasks per user in that chat.
+- The bot can be added to groups and topic groups; it tracks tasks per user inside each topic.
+- After the deadline passes, the bot posts a daily score summary in the group for that date.
