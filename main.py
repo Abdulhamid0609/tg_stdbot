@@ -55,6 +55,7 @@ def init_db() -> None:
                 completed INTEGER NOT NULL DEFAULT 0,
                 proof TEXT,
                 proof_file_id TEXT,
+                proof_message_id INTEGER,
                 UNIQUE(user_id, chat_id, thread_id, date, task_index)
             )
             """
@@ -88,6 +89,7 @@ def init_db() -> None:
         ensure_column(conn, "tasks", "chat_id", "INTEGER", "user_id")
         ensure_column(conn, "tasks", "thread_id", "INTEGER", str(DEFAULT_THREAD_ID))
         ensure_column(conn, "tasks", "proof_file_id", "TEXT")
+        ensure_column(conn, "tasks", "proof_message_id", "INTEGER")
         ensure_column(conn, "results", "chat_id", "INTEGER", "user_id")
         ensure_column(conn, "results", "thread_id", "INTEGER", str(DEFAULT_THREAD_ID))
         ensure_column(conn, "chats", "deadline_time", "TEXT")
@@ -174,6 +176,10 @@ def parse_date(value: str) -> dt.date:
 
 def parse_time(value: str) -> dt.time:
     return dt.time.fromisoformat(value)
+
+
+def format_date(value: dt.date) -> str:
+    return value.isoformat()
 
 
 def utc_now() -> dt.datetime:
@@ -267,15 +273,27 @@ def format_tasks(tasks: Iterable[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
+def format_tasks_with_links(tasks: Iterable[sqlite3.Row], chat_or_id) -> str:
+    lines = []
+    for task in tasks:
+        status = "✅" if task["completed"] == 1 else "❌"
+        link = None
+        if task["proof_message_id"]:
+            link = message_link(chat_or_id, task["proof_message_id"])
+        link_text = f" (proof: {link})" if link else ""
+        lines.append(f"{status} {task['task_index']}. {task['description']}{link_text}")
+    return "\n".join(lines)
+
+
 def help_text() -> str:
     return (
         "Commands:\n"
         "/start - Welcome message\n"
         "/help - Show this help\n"
         "/setdeadline HH:MM (UTC) - Set the daily deadline (admin only, all topics)\n"
-        "/tasks YYYY-MM-DD + tasks on new lines - Save daily tasks\n"
-        "/done YYYY-MM-DD TASK_NUMBER proof - Mark a task done (photos supported)\n"
-        "/status YYYY-MM-DD - Show task status and result\n"
+        "/tasks [YYYY-MM-DD] + tasks on new lines - Save daily tasks\n"
+        "/done [YYYY-MM-DD] TASK_NUMBER proof - Mark a task done (photos supported)\n"
+        "/status [YYYY-MM-DD|@user|all] - Show task status and result\n"
         "/score - Show total goals and penalties"
     )
 
@@ -294,6 +312,42 @@ def get_command_text(update: Update) -> str:
 
 def parse_args_from_text(text: str) -> list[str]:
     return text.split()[1:] if text else []
+
+
+def parse_optional_date(value: str | None) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return parse_date(value)
+    except ValueError:
+        return None
+
+
+def user_is_admin(member) -> bool:
+    return member.status in {"administrator", "creator"}
+
+
+def get_proof_message(update: Update):
+    message = update.effective_message
+    if not message:
+        return None
+    if message.photo:
+        return message
+    if message.reply_to_message and message.reply_to_message.photo:
+        return message.reply_to_message
+    return None
+
+
+def message_link(chat_or_id, message_id: int) -> str | None:
+    if not chat_or_id or not message_id:
+        return None
+    if hasattr(chat_or_id, "username") and chat_or_id.username:
+        return f"https://t.me/{chat_or_id.username}/{message_id}"
+    chat_id = chat_or_id.id if hasattr(chat_or_id, "id") else chat_or_id
+    if isinstance(chat_id, int) and chat_id < 0:
+        internal_id = str(chat_id)[4:]
+        return f"https://t.me/c/{internal_id}/{message_id}"
+    return None
 
 
 def format_user_label(row: sqlite3.Row) -> str:
@@ -347,10 +401,7 @@ def build_daily_report(
         if not result:
             continue
         outcome = "+1 GOAL ✅" if result.goal == 1 else "+1 PENALTY ❌"
-        task_lines = [
-            f"    {('✅' if task['completed'] == 1 else '❌')} {task['task_index']}. {task['description']}"
-            for task in tasks
-        ]
+        task_lines = format_tasks_with_links(tasks, chat_id).splitlines()
         entries.append("\n".join([f"- {format_user_label(user)}: {outcome}", *task_lines]))
 
     if not entries:
@@ -425,7 +476,7 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     member = await context.bot.get_chat_member(
         update.effective_chat.id, update.effective_user.id
     )
-    if member.status not in {"administrator", "creator"}:
+    if not user_is_admin(member):
         await update.message.reply_text("Only admins can set the group deadline.")
         return
 
@@ -443,23 +494,25 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command_text = get_command_text(update)
     args = context.args if context.args else parse_args_from_text(command_text)
-    if not args:
-        await update.message.reply_text("Usage: /tasks YYYY-MM-DD followed by tasks on new lines.")
-        return
-
-    date_text = args[0]
-    try:
-        task_date = parse_date(date_text)
-    except ValueError:
-        await update.message.reply_text("Invalid date. Use YYYY-MM-DD.")
-        return
+    if args:
+        parsed_date = parse_optional_date(args[0])
+        if parsed_date:
+            date_text = format_date(parsed_date)
+        else:
+            date_text = format_date(utc_now().date())
+    else:
+        date_text = format_date(utc_now().date())
 
     raw_text = command_text
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     task_lines = lines[1:] if lines and lines[0].startswith("/tasks") else lines
 
     if not task_lines:
-        await update.message.reply_text("Please provide at least one task on a new line.")
+        await update.message.reply_text(
+            "Please provide at least one task on a new line.\n"
+            "Example:\n"
+            "/tasks 2026-01-23\nReading a book\nRunning 2 kms"
+        )
         return
 
     thread_id = get_thread_id(update)
@@ -503,30 +556,37 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command_text = get_command_text(update)
     args = context.args if context.args else parse_args_from_text(command_text)
-    if len(args) < 2:
-        await update.message.reply_text("Usage: /done YYYY-MM-DD TASK_NUMBER proof text")
+    if len(args) < 1:
+        await update.message.reply_text("Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text")
         return
 
-    date_text = args[0]
-    task_number_text = args[1]
-    proof = " ".join(args[2:]).strip() if len(args) > 2 else ""
+    parsed_date = parse_optional_date(args[0])
+    if parsed_date:
+        date_text = format_date(parsed_date)
+        task_arg_index = 1
+    else:
+        date_text = format_date(utc_now().date())
+        task_arg_index = 0
 
-    try:
-        task_date = parse_date(date_text)
-    except ValueError:
-        await update.message.reply_text("Invalid date. Use YYYY-MM-DD.")
+    if len(args) <= task_arg_index:
+        await update.message.reply_text("Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text")
         return
+
+    task_number_text = args[task_arg_index]
+    proof = " ".join(args[task_arg_index + 1 :]).strip() if len(args) > task_arg_index + 1 else ""
+
+    task_date = parse_date(date_text)
 
     if not task_number_text.isdigit():
         await update.message.reply_text("Task number must be numeric.")
         return
 
     task_number = int(task_number_text)
+    proof_message = get_proof_message(update)
     photo_file_id = (
-        update.message.photo[-1].file_id
-        if update.message and update.message.photo
-        else None
+        proof_message.photo[-1].file_id if proof_message and proof_message.photo else None
     )
+    proof_message_id = proof_message.message_id if proof_message else update.effective_message.message_id
 
     thread_id = get_thread_id(update)
 
@@ -564,8 +624,8 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         conn.execute(
-            "UPDATE tasks SET completed = 1, proof = ?, proof_file_id = ? WHERE id = ?",
-            (proof if proof else None, photo_file_id, row[0]),
+            "UPDATE tasks SET completed = 1, proof = ?, proof_file_id = ?, proof_message_id = ? WHERE id = ?",
+            (proof if proof else None, photo_file_id, proof_message_id, row[0]),
         )
 
     await update.message.reply_text(
@@ -576,21 +636,29 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command_text = get_command_text(update)
     args = context.args if context.args else parse_args_from_text(command_text)
-    if not args:
-        await update.message.reply_text("Usage: /status YYYY-MM-DD")
-        return
+    target = args[0] if args else ""
+    parsed_date = parse_optional_date(target)
+    if parsed_date:
+        date_text = format_date(parsed_date)
+        target_arg = args[1] if len(args) > 1 else ""
+    else:
+        date_text = format_date(utc_now().date())
+        target_arg = target
 
-    date_text = args[0]
-    try:
-        task_date = parse_date(date_text)
-    except ValueError:
-        await update.message.reply_text("Invalid date. Use YYYY-MM-DD.")
-        return
+    task_date = parse_date(date_text)
 
     thread_id = get_thread_id(update)
 
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
+        if target_arg in {"all"} or target_arg.startswith("@"):
+            member = await context.bot.get_chat_member(
+                update.effective_chat.id, update.effective_user.id
+            )
+            if not user_is_admin(member):
+                await update.message.reply_text("Only admins can view other users' status.")
+                return
+
         deadline_text = get_chat_deadline(conn, update.effective_chat.id, thread_id)
         if not deadline_text:
             await update.message.reply_text(
@@ -599,9 +667,65 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         deadline_time = parse_time(deadline_text)
+        if target_arg == "all":
+            user_rows = conn.execute(
+                """
+                SELECT DISTINCT tasks.user_id, users.username, users.first_name, users.last_name
+                FROM tasks
+                LEFT JOIN users ON users.user_id = tasks.user_id
+                WHERE tasks.chat_id = ? AND tasks.thread_id = ? AND tasks.date = ?
+                ORDER BY COALESCE(users.username, users.first_name, users.last_name, tasks.user_id)
+                """,
+                (update.effective_chat.id, thread_id, date_text),
+            ).fetchall()
+            if not user_rows:
+                await update.message.reply_text("No tasks saved for that date.")
+                return
+            sections = []
+            for user in user_rows:
+                tasks_list = fetch_tasks(
+                    conn, user["user_id"], update.effective_chat.id, thread_id, date_text
+                )
+                if not tasks_list:
+                    continue
+                result = evaluate_daily_result(
+                    conn,
+                    user["user_id"],
+                    update.effective_chat.id,
+                    thread_id,
+                    task_date,
+                    deadline_time,
+                )
+                outcome = (
+                    "GOAL ✅" if result and result.goal == 1 else "PENALTY ❌"
+                )
+                sections.append(
+                    "\n".join(
+                        [
+                            f"{format_user_label(user)} ({outcome}):",
+                            format_tasks_with_links(tasks_list, update.effective_chat),
+                        ]
+                    )
+                )
+            await update.message.reply_text("\n\n".join(sections))
+            return
+
+        if target_arg.startswith("@"):
+            username = target_arg.lstrip("@")
+            user = conn.execute(
+                "SELECT user_id, username, first_name, last_name FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if not user:
+                await update.message.reply_text("User not found for that username.")
+                return
+            user_id = user[0]
+        else:
+            user_id = update.effective_user.id
+
         tasks_list = fetch_tasks(
             conn,
-            update.effective_user.id,
+            user_id,
             update.effective_chat.id,
             thread_id,
             date_text,
@@ -612,14 +736,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         result = evaluate_daily_result(
             conn,
-            update.effective_user.id,
+            user_id,
             update.effective_chat.id,
             thread_id,
             task_date,
             deadline_time,
         )
 
-    summary_lines = [f"Tasks for {date_text}:", format_tasks(tasks_list)]
+    summary_lines = [f"Tasks for {date_text}:", format_tasks_with_links(tasks_list, update.effective_chat)]
     if result:
         outcome = "GOAL ✅" if result.goal == 1 else "PENALTY ❌"
         summary_lines.append(f"Result: {outcome}")
