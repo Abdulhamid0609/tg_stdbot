@@ -34,6 +34,16 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS chats (
+                chat_id INTEGER NOT NULL,
+                thread_id INTEGER NOT NULL,
+                deadline_time TEXT,
+                PRIMARY KEY (chat_id, thread_id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -80,6 +90,7 @@ def init_db() -> None:
         ensure_column(conn, "tasks", "proof_file_id", "TEXT")
         ensure_column(conn, "results", "chat_id", "INTEGER", "user_id")
         ensure_column(conn, "results", "thread_id", "INTEGER", str(DEFAULT_THREAD_ID))
+        ensure_column(conn, "chats", "deadline_time", "TEXT")
         ensure_column(conn, "reports", "thread_id", "INTEGER", str(DEFAULT_THREAD_ID))
 
 
@@ -127,6 +138,27 @@ def set_deadline_time(conn: sqlite3.Connection, user_id: int, deadline: str) -> 
         "INSERT INTO users (user_id, deadline_time) VALUES (?, ?)"
         " ON CONFLICT(user_id) DO UPDATE SET deadline_time = excluded.deadline_time",
         (user_id, deadline),
+    )
+
+
+def get_chat_deadline(conn: sqlite3.Connection, chat_id: int, thread_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT deadline_time FROM chats WHERE chat_id = ? AND thread_id = ?",
+        (chat_id, thread_id),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_chat_deadline(
+    conn: sqlite3.Connection, chat_id: int, thread_id: int, deadline: str
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO chats (chat_id, thread_id, deadline_time)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id, thread_id) DO UPDATE SET deadline_time = excluded.deadline_time
+        """,
+        (chat_id, thread_id, deadline),
     )
 
 
@@ -234,7 +266,7 @@ def help_text() -> str:
         "Commands:\n"
         "/start - Welcome message\n"
         "/help - Show this help\n"
-        "/setdeadline HH:MM (UTC) - Set your daily deadline\n"
+        "/setdeadline HH:MM (UTC) - Set the daily deadline (admin only)\n"
         "/tasks YYYY-MM-DD + tasks on new lines - Save daily tasks\n"
         "/done YYYY-MM-DD TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status YYYY-MM-DD - Show task status and result\n"
@@ -286,14 +318,15 @@ def build_daily_report(
         return None
 
     entries = []
+    deadline_text = get_chat_deadline(conn, chat_id, thread_id)
+    if not deadline_text:
+        return None
+    deadline_time = parse_time(deadline_text)
+    task_date = parse_date(date_text)
+    if not is_after_deadline(task_date, deadline_time):
+        return None
+
     for user in user_rows:
-        deadline_text = get_deadline_time(conn, user["user_id"])
-        if not deadline_text:
-            return None
-        deadline_time = parse_time(deadline_text)
-        task_date = parse_date(date_text)
-        if not is_after_deadline(task_date, deadline_time):
-            return None
         result = evaluate_daily_result(
             conn,
             user["user_id"],
@@ -375,9 +408,19 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Invalid time. Use HH:MM (24h).")
         return
 
+    thread_id = get_thread_id(update)
+    member = await context.bot.get_chat_member(
+        update.effective_chat.id, update.effective_user.id
+    )
+    if member.status not in {"administrator", "creator"}:
+        await update.message.reply_text("Only admins can set the group deadline.")
+        return
+
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
-        set_deadline_time(conn, update.effective_user.id, deadline_time.isoformat())
+        set_chat_deadline(
+            conn, update.effective_chat.id, thread_id, deadline_time.isoformat()
+        )
 
     await update.message.reply_text(
         f"Deadline set to {deadline_time.strftime('%H:%M')} UTC."
@@ -406,14 +449,22 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Please provide at least one task on a new line.")
         return
 
+    thread_id = get_thread_id(update)
+
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, thread_id)
+        if not deadline_text:
+            await update.message.reply_text(
+                "Set a deadline first with /setdeadline HH:MM (admin only)."
+            )
+            return
         conn.execute(
             "DELETE FROM tasks WHERE user_id = ? AND chat_id = ? AND thread_id = ? AND date = ?",
             (
                 update.effective_user.id,
                 update.effective_chat.id,
-                get_thread_id(update),
+                thread_id,
                 date_text,
             ),
         )
@@ -424,7 +475,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 (
                     update.effective_user.id,
                     update.effective_chat.id,
-                    get_thread_id(update),
+                    thread_id,
                     date_text,
                     index,
                     task,
@@ -464,11 +515,15 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else None
     )
 
+    thread_id = get_thread_id(update)
+
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
-        deadline_text = get_deadline_time(conn, update.effective_user.id)
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, thread_id)
         if not deadline_text:
-            await update.message.reply_text("Set a deadline first with /setdeadline HH:MM.")
+            await update.message.reply_text(
+                "Set a deadline first with /setdeadline HH:MM (admin only)."
+            )
             return
 
         deadline_time = parse_time(deadline_text)
@@ -486,7 +541,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             (
                 update.effective_user.id,
                 update.effective_chat.id,
-                get_thread_id(update),
+                thread_id,
                 date_text,
                 task_number,
             ),
@@ -519,11 +574,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Invalid date. Use YYYY-MM-DD.")
         return
 
+    thread_id = get_thread_id(update)
+
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
-        deadline_text = get_deadline_time(conn, update.effective_user.id)
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, thread_id)
         if not deadline_text:
-            await update.message.reply_text("Set a deadline first with /setdeadline HH:MM.")
+            await update.message.reply_text(
+                "Set a deadline first with /setdeadline HH:MM (admin only)."
+            )
             return
 
         deadline_time = parse_time(deadline_text)
@@ -531,7 +590,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             conn,
             update.effective_user.id,
             update.effective_chat.id,
-            get_thread_id(update),
+            thread_id,
             date_text,
         )
         if not tasks_list:
@@ -542,7 +601,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             conn,
             update.effective_user.id,
             update.effective_chat.id,
-            get_thread_id(update),
+            thread_id,
             task_date,
             deadline_time,
         )
@@ -560,7 +619,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
-        deadline_text = get_deadline_time(conn, update.effective_user.id)
+        thread_id = get_thread_id(update)
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, thread_id)
         if deadline_text:
             deadline_time = parse_time(deadline_text)
             task_dates = conn.execute(
@@ -568,14 +628,14 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 SELECT DISTINCT date FROM tasks
                 WHERE user_id = ? AND chat_id = ? AND thread_id = ?
                 """,
-                (update.effective_user.id, update.effective_chat.id, get_thread_id(update)),
+                (update.effective_user.id, update.effective_chat.id, thread_id),
             ).fetchall()
             for (date_text,) in task_dates:
                 evaluate_daily_result(
                     conn,
                     update.effective_user.id,
                     update.effective_chat.id,
-                    get_thread_id(update),
+                    thread_id,
                     parse_date(date_text),
                     deadline_time,
                 )
@@ -584,7 +644,7 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             conn,
             update.effective_user.id,
             update.effective_chat.id,
-            get_thread_id(update),
+            thread_id,
         )
 
     goals = sum(result.goal for result in results)
