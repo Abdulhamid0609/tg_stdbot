@@ -32,12 +32,14 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
                 date TEXT NOT NULL,
                 task_index INTEGER NOT NULL,
                 description TEXT NOT NULL,
                 completed INTEGER NOT NULL DEFAULT 0,
                 proof TEXT,
-                UNIQUE(user_id, date, task_index)
+                proof_file_id TEXT,
+                UNIQUE(user_id, chat_id, date, task_index)
             )
             """
         )
@@ -45,12 +47,33 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS results (
                 user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
                 date TEXT NOT NULL,
                 goal INTEGER NOT NULL DEFAULT 0,
                 penalty INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, date)
+                PRIMARY KEY (user_id, chat_id, date)
             )
             """
+        )
+        ensure_column(conn, "tasks", "chat_id", "INTEGER", "user_id")
+        ensure_column(conn, "tasks", "proof_file_id", "TEXT")
+        ensure_column(conn, "results", "chat_id", "INTEGER", "user_id")
+
+
+def ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+    fill_expression: str | None = None,
+) -> None:
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column in columns:
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    if fill_expression is not None:
+        conn.execute(
+            f"UPDATE {table} SET {column} = {fill_expression} WHERE {column} IS NULL"
         )
 
 
@@ -90,18 +113,20 @@ def is_after_deadline(target_date: dt.date, deadline_time: dt.time) -> bool:
     return utc_now() > deadline_datetime(target_date, deadline_time)
 
 
-def fetch_tasks(conn: sqlite3.Connection, user_id: int, date: str) -> list[sqlite3.Row]:
+def fetch_tasks(
+    conn: sqlite3.Connection, user_id: int, chat_id: int, date: str
+) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return conn.execute(
-        "SELECT * FROM tasks WHERE user_id = ? AND date = ? ORDER BY task_index",
-        (user_id, date),
+        "SELECT * FROM tasks WHERE user_id = ? AND chat_id = ? AND date = ? ORDER BY task_index",
+        (user_id, chat_id, date),
     ).fetchall()
 
 
-def fetch_results(conn: sqlite3.Connection, user_id: int) -> list[DailyResult]:
+def fetch_results(conn: sqlite3.Connection, user_id: int, chat_id: int) -> list[DailyResult]:
     rows = conn.execute(
-        "SELECT date, goal, penalty FROM results WHERE user_id = ? ORDER BY date",
-        (user_id,),
+        "SELECT date, goal, penalty FROM results WHERE user_id = ? AND chat_id = ? ORDER BY date",
+        (user_id, chat_id),
     ).fetchall()
     return [DailyResult(date=row[0], goal=row[1], penalty=row[2]) for row in rows]
 
@@ -109,6 +134,7 @@ def fetch_results(conn: sqlite3.Connection, user_id: int) -> list[DailyResult]:
 def evaluate_daily_result(
     conn: sqlite3.Connection,
     user_id: int,
+    chat_id: int,
     date: dt.date,
     deadline_time: dt.time,
 ) -> DailyResult | None:
@@ -116,13 +142,13 @@ def evaluate_daily_result(
         return None
 
     existing = conn.execute(
-        "SELECT date, goal, penalty FROM results WHERE user_id = ? AND date = ?",
-        (user_id, date.isoformat()),
+        "SELECT date, goal, penalty FROM results WHERE user_id = ? AND chat_id = ? AND date = ?",
+        (user_id, chat_id, date.isoformat()),
     ).fetchone()
     if existing:
         return DailyResult(date=existing[0], goal=existing[1], penalty=existing[2])
 
-    tasks = fetch_tasks(conn, user_id, date.isoformat())
+    tasks = fetch_tasks(conn, user_id, chat_id, date.isoformat())
     if not tasks:
         return None
 
@@ -131,8 +157,8 @@ def evaluate_daily_result(
     penalty = 0 if all_done else 1
 
     conn.execute(
-        "INSERT INTO results (user_id, date, goal, penalty) VALUES (?, ?, ?, ?)",
-        (user_id, date.isoformat(), goal, penalty),
+        "INSERT INTO results (user_id, chat_id, date, goal, penalty) VALUES (?, ?, ?, ?, ?)",
+        (user_id, chat_id, date.isoformat(), goal, penalty),
     )
     return DailyResult(date=date.isoformat(), goal=goal, penalty=penalty)
 
@@ -142,8 +168,24 @@ def format_tasks(tasks: Iterable[sqlite3.Row]) -> str:
     for task in tasks:
         status = "✅" if task["completed"] == 1 else "❌"
         proof = f" (proof: {task['proof']})" if task["proof"] else ""
-        lines.append(f"{status} {task['task_index']}. {task['description']}{proof}")
+        photo = " (photo attached)" if task["proof_file_id"] else ""
+        lines.append(
+            f"{status} {task['task_index']}. {task['description']}{proof}{photo}"
+        )
     return "\n".join(lines)
+
+
+def help_text() -> str:
+    return (
+        "Commands:\n"
+        "/start - Welcome message\n"
+        "/help - Show this help\n"
+        "/setdeadline HH:MM (UTC) - Set your daily deadline\n"
+        "/tasks YYYY-MM-DD + tasks on new lines - Save daily tasks\n"
+        "/done YYYY-MM-DD TASK_NUMBER proof - Mark a task done (photos supported)\n"
+        "/status YYYY-MM-DD - Show task status and result\n"
+        "/score - Show total goals and penalties"
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -151,9 +193,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Welcome to Carpe Diem!\n"
         "Use /setdeadline HH:MM (UTC) to set your daily deadline.\n"
         "Send tasks with /tasks YYYY-MM-DD followed by each task on a new line.\n"
-        "Mark tasks done with /done YYYY-MM-DD TASK_NUMBER proof text."
+        "Mark tasks done with /done YYYY-MM-DD TASK_NUMBER proof text.\n"
+        "Use /help for the full command list."
     )
     await update.message.reply_text(message)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(help_text())
 
 
 async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,11 +243,15 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM tasks WHERE user_id = ? AND date = ?", (update.effective_user.id, date_text))
+        conn.execute(
+            "DELETE FROM tasks WHERE user_id = ? AND chat_id = ? AND date = ?",
+            (update.effective_user.id, update.effective_chat.id, date_text),
+        )
         for index, task in enumerate(task_lines, start=1):
             conn.execute(
-                "INSERT INTO tasks (user_id, date, task_index, description) VALUES (?, ?, ?, ?)",
-                (update.effective_user.id, date_text, index, task),
+                "INSERT INTO tasks (user_id, chat_id, date, task_index, description)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (update.effective_user.id, update.effective_chat.id, date_text, index, task),
             )
 
     await update.message.reply_text(
@@ -228,6 +279,11 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     task_number = int(task_number_text)
+    photo_file_id = (
+        update.message.photo[-1].file_id
+        if update.message and update.message.photo
+        else None
+    )
 
     with sqlite3.connect(DB_PATH) as conn:
         deadline_text = get_deadline_time(conn, update.effective_user.id)
@@ -243,16 +299,16 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         row = conn.execute(
-            "SELECT id FROM tasks WHERE user_id = ? AND date = ? AND task_index = ?",
-            (update.effective_user.id, date_text, task_number),
+            "SELECT id FROM tasks WHERE user_id = ? AND chat_id = ? AND date = ? AND task_index = ?",
+            (update.effective_user.id, update.effective_chat.id, date_text, task_number),
         ).fetchone()
         if not row:
             await update.message.reply_text("Task not found for that date.")
             return
 
         conn.execute(
-            "UPDATE tasks SET completed = 1, proof = ? WHERE id = ?",
-            (proof if proof else None, row[0]),
+            "UPDATE tasks SET completed = 1, proof = ?, proof_file_id = ? WHERE id = ?",
+            (proof if proof else None, photo_file_id, row[0]),
         )
 
     await update.message.reply_text(
@@ -279,12 +335,20 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         deadline_time = parse_time(deadline_text)
-        tasks_list = fetch_tasks(conn, update.effective_user.id, date_text)
+        tasks_list = fetch_tasks(
+            conn, update.effective_user.id, update.effective_chat.id, date_text
+        )
         if not tasks_list:
             await update.message.reply_text("No tasks saved for that date.")
             return
 
-        result = evaluate_daily_result(conn, update.effective_user.id, task_date, deadline_time)
+        result = evaluate_daily_result(
+            conn,
+            update.effective_user.id,
+            update.effective_chat.id,
+            task_date,
+            deadline_time,
+        )
 
     summary_lines = [f"Tasks for {date_text}:", format_tasks(tasks_list)]
     if result:
@@ -302,18 +366,19 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if deadline_text:
             deadline_time = parse_time(deadline_text)
             task_dates = conn.execute(
-                "SELECT DISTINCT date FROM tasks WHERE user_id = ?",
-                (update.effective_user.id,),
+                "SELECT DISTINCT date FROM tasks WHERE user_id = ? AND chat_id = ?",
+                (update.effective_user.id, update.effective_chat.id),
             ).fetchall()
             for (date_text,) in task_dates:
                 evaluate_daily_result(
                     conn,
                     update.effective_user.id,
+                    update.effective_chat.id,
                     parse_date(date_text),
                     deadline_time,
                 )
 
-        results = fetch_results(conn, update.effective_user.id)
+        results = fetch_results(conn, update.effective_user.id, update.effective_chat.id)
 
     goals = sum(result.goal for result in results)
     penalties = sum(result.penalty for result in results)
@@ -330,6 +395,7 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("setdeadline", set_deadline))
     application.add_handler(CommandHandler("tasks", tasks))
     application.add_handler(CommandHandler("done", done))

@@ -11,6 +11,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 
 ## Commands
 - `/start` – Introduction and quick help.
+- `/help` – Command list.
 - `/setdeadline HH:MM` – Set a daily deadline time (24h, UTC).
 - `/tasks YYYY-MM-DD` followed by new lines for each task. Example:
   ```
@@ -19,7 +20,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
   Running 2 kms
   Listening podcast
   ```
-- `/done YYYY-MM-DD TASK_NUMBER proof text` – Mark a task done with proof (rejected after the deadline).
+- `/done YYYY-MM-DD TASK_NUMBER proof text` – Mark a task done with proof or a photo (rejected after the deadline).
 - `/status YYYY-MM-DD` – Show task completion status and daily result.
 - `/score` – Show total goals and penalties.
 
@@ -38,3 +39,4 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 ## Notes
 - Deadlines are interpreted in **UTC**.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.
+- The bot can be added to groups; it tracks tasks per user in that chat.
