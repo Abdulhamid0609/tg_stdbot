@@ -146,15 +146,9 @@ def set_deadline_time(conn: sqlite3.Connection, user_id: int, deadline: str) -> 
 def get_chat_deadline(conn: sqlite3.Connection, chat_id: int, thread_id: int) -> str | None:
     row = conn.execute(
         "SELECT deadline_time FROM chats WHERE chat_id = ? AND thread_id = ?",
-        (chat_id, thread_id),
-    ).fetchone()
-    if row and row[0]:
-        return row[0]
-    fallback = conn.execute(
-        "SELECT deadline_time FROM chats WHERE chat_id = ? AND thread_id = ?",
         (chat_id, DEFAULT_THREAD_ID),
     ).fetchone()
-    return fallback[0] if fallback else None
+    return row[0] if row else None
 
 
 def set_chat_deadline(
@@ -205,6 +199,20 @@ def fetch_tasks(
         ORDER BY task_index
         """,
         (user_id, chat_id, thread_id, date),
+    ).fetchall()
+
+
+def fetch_tasks_all_threads(
+    conn: sqlite3.Connection, user_id: int, chat_id: int, date: str
+) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        """
+        SELECT * FROM tasks
+        WHERE user_id = ? AND chat_id = ? AND date = ?
+        ORDER BY thread_id, task_index
+        """,
+        (user_id, chat_id, date),
     ).fetchall()
 
 
@@ -261,6 +269,20 @@ def evaluate_daily_result(
     return DailyResult(date=date.isoformat(), goal=goal, penalty=penalty)
 
 
+def evaluate_result_from_tasks(
+    tasks: Iterable[sqlite3.Row], date: dt.date, deadline_time: dt.time
+) -> DailyResult | None:
+    if not is_after_deadline(date, deadline_time):
+        return None
+    tasks_list = list(tasks)
+    if not tasks_list:
+        return None
+    all_done = all(task["completed"] == 1 for task in tasks_list)
+    goal = 1 if all_done else 0
+    penalty = 0 if all_done else 1
+    return DailyResult(date=date.isoformat(), goal=goal, penalty=penalty)
+
+
 def format_tasks(tasks: Iterable[sqlite3.Row]) -> str:
     lines = []
     for task in tasks:
@@ -273,7 +295,9 @@ def format_tasks(tasks: Iterable[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def format_tasks_with_links(tasks: Iterable[sqlite3.Row], chat_or_id) -> str:
+def format_tasks_with_links(
+    tasks: Iterable[sqlite3.Row], chat_or_id, include_thread: bool = False
+) -> str:
     lines = []
     for task in tasks:
         status = "✅" if task["completed"] == 1 else "❌"
@@ -281,7 +305,12 @@ def format_tasks_with_links(tasks: Iterable[sqlite3.Row], chat_or_id) -> str:
         if task["proof_message_id"]:
             link = message_link(chat_or_id, task["proof_message_id"])
         link_text = f" (proof: {link})" if link else ""
-        lines.append(f"{status} {task['task_index']}. {task['description']}{link_text}")
+        thread_label = (
+            f" [topic {task['thread_id']}]" if include_thread and task["thread_id"] else ""
+        )
+        lines.append(
+            f"{status} {task['task_index']}. {task['description']}{thread_label}{link_text}"
+        )
     return "\n".join(lines)
 
 
@@ -290,7 +319,7 @@ def help_text() -> str:
         "Commands:\n"
         "/start - Welcome message\n"
         "/help - Show this help\n"
-        "/setdeadline HH:MM (UTC) - Set the daily deadline (admin only, all topics)\n"
+        "/setdeadline HH:MM (UTC) - Set the deadline time (admin only, all topics)\n"
         "/tasks [YYYY-MM-DD] + tasks on new lines - Save daily tasks\n"
         "/done [YYYY-MM-DD] TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status [YYYY-MM-DD|@user|all] - Show task status and result\n"
@@ -450,7 +479,7 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = (
         "Welcome to Carpe Diem!\n"
-        "Use /setdeadline HH:MM (UTC) to set the daily deadline (admin only).\n"
+        "Use /setdeadline HH:MM (UTC) to set the deadline time for this chat (admin only).\n"
         "Send tasks with /tasks [YYYY-MM-DD] followed by each task on a new line.\n"
         "Mark tasks done with /done [YYYY-MM-DD] TASK_NUMBER proof text.\n"
         "Use /help for the full command list."
@@ -490,7 +519,7 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     await update.message.reply_text(
-        f"Deadline set to {deadline_time.strftime('%H:%M')} UTC."
+        f"Deadline set to {deadline_time.strftime('%H:%M')} UTC for this chat."
     )
 
 
@@ -689,10 +718,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 SELECT DISTINCT tasks.user_id, users.username, users.first_name, users.last_name
                 FROM tasks
                 LEFT JOIN users ON users.user_id = tasks.user_id
-                WHERE tasks.chat_id = ? AND tasks.thread_id = ? AND tasks.date = ?
+                WHERE tasks.chat_id = ? AND tasks.date = ?
                 ORDER BY COALESCE(users.username, users.first_name, users.last_name, tasks.user_id)
                 """,
-                (update.effective_chat.id, thread_id, date_text),
+                (update.effective_chat.id, date_text),
             ).fetchall()
             if not user_rows:
                 await update.message.reply_text(
@@ -701,19 +730,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             sections = []
             for user in user_rows:
-                tasks_list = fetch_tasks(
-                    conn, user["user_id"], update.effective_chat.id, thread_id, date_text
+                tasks_list = fetch_tasks_all_threads(
+                    conn, user["user_id"], update.effective_chat.id, date_text
                 )
                 if not tasks_list:
                     continue
-                result = evaluate_daily_result(
-                    conn,
-                    user["user_id"],
-                    update.effective_chat.id,
-                    thread_id,
-                    task_date,
-                    deadline_time,
-                )
+                result = evaluate_result_from_tasks(tasks_list, task_date, deadline_time)
                 if result:
                     outcome = "GOAL ✅" if result.goal == 1 else "PENALTY ❌"
                 else:
@@ -722,7 +744,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     "\n".join(
                         [
                             f"{format_user_label(user)} ({outcome}):",
-                            format_tasks_with_links(tasks_list, update.effective_chat),
+                            format_tasks_with_links(
+                                tasks_list, update.effective_chat, include_thread=True
+                            ),
                         ]
                     )
                 )
@@ -742,29 +766,47 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             user_id = update.effective_user.id
 
-        tasks_list = fetch_tasks(
-            conn,
-            user_id,
-            update.effective_chat.id,
-            thread_id,
-            date_text,
-        )
+        if target_arg.startswith("@"):
+            tasks_list = fetch_tasks_all_threads(
+                conn,
+                user_id,
+                update.effective_chat.id,
+                date_text,
+            )
+        else:
+            tasks_list = fetch_tasks(
+                conn,
+                user_id,
+                update.effective_chat.id,
+                thread_id,
+                date_text,
+            )
         if not tasks_list:
             await update.message.reply_text(
                 "No tasks saved for that date. Use /tasks to add tasks first."
             )
             return
 
-        result = evaluate_daily_result(
-            conn,
-            user_id,
-            update.effective_chat.id,
-            thread_id,
-            task_date,
-            deadline_time,
-        )
+        if target_arg.startswith("@"):
+            result = evaluate_result_from_tasks(tasks_list, task_date, deadline_time)
+        else:
+            result = evaluate_daily_result(
+                conn,
+                user_id,
+                update.effective_chat.id,
+                thread_id,
+                task_date,
+                deadline_time,
+            )
 
-    summary_lines = [f"Tasks for {date_text}:", format_tasks_with_links(tasks_list, update.effective_chat)]
+    summary_lines = [
+        f"Tasks for {date_text}:",
+        format_tasks_with_links(
+            tasks_list,
+            update.effective_chat,
+            include_thread=target_arg.startswith("@"),
+        ),
+    ]
     if result:
         outcome = "GOAL ✅" if result.goal == 1 else "PENALTY ❌"
         summary_lines.append(f"Result: {outcome}")
@@ -813,9 +855,32 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    thread_id = get_thread_id(update)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, DEFAULT_THREAD_ID)
+        if not deadline_text:
+            await update.message.reply_text(
+                "Set a deadline first with /setdeadline HH:MM (admin only)."
+            )
+            return
+        deadline_time = parse_time(deadline_text)
+        task_rows = conn.execute(
+            """
+            SELECT DISTINCT user_id, thread_id, date
+            FROM tasks
+            WHERE chat_id = ?
+            """,
+            (update.effective_chat.id,),
+        ).fetchall()
+        for user_id, thread_id, date_text in task_rows:
+            evaluate_daily_result(
+                conn,
+                user_id,
+                update.effective_chat.id,
+                thread_id,
+                parse_date(date_text),
+                deadline_time,
+            )
         rows = conn.execute(
             """
             SELECT results.user_id,
@@ -826,11 +891,11 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                    users.last_name
             FROM results
             LEFT JOIN users ON users.user_id = results.user_id
-            WHERE results.chat_id = ? AND results.thread_id = ?
+            WHERE results.chat_id = ?
             GROUP BY results.user_id
             ORDER BY goals DESC, penalties ASC, results.user_id ASC
             """,
-            (update.effective_chat.id, thread_id),
+            (update.effective_chat.id,),
         ).fetchall()
 
     if not rows:

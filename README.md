@@ -5,14 +5,14 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 ## Features
 - Store daily task lists per participant.
 - Record proofs for each task.
-- Enforce a per-user daily deadline.
+- Enforce a shared daily deadline per group.
 - Automatically award **+1 GOAL** when all tasks are done before the deadline.
 - Automatically award **+1 PENALTY** when at least one task is missing after the deadline.
 
 ## Commands
 - `/start` – Introduction and quick help.
 - `/help` – Command list.
-- `/setdeadline HH:MM` – Set a daily deadline time (24h, UTC). Admin-only in groups and applies to all topics.
+- `/setdeadline HH:MM` – Set a deadline time (24h, UTC). Admin-only in groups and applies to all topics.
 - `/tasks [YYYY-MM-DD]` followed by new lines for each task (date optional = today). Example:
   ```
   /tasks 2026-01-23
@@ -22,10 +22,10 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
   ```
 - `/done [YYYY-MM-DD] TASK_NUMBER proof text` – Mark a task done with proof or attach a photo and reply with `/done` (rejected after the deadline).
 - `/status [YYYY-MM-DD]` – Show task completion status and daily result.
-- `/status @nickname [YYYY-MM-DD]` – (Admin only) View another user’s status.
-- `/status all [YYYY-MM-DD]` – (Admin only) View all users’ status.
+- `/status @nickname [YYYY-MM-DD]` – (Admin only) View another user’s status across all topics.
+- `/status all [YYYY-MM-DD]` – (Admin only) View all users’ status across all topics.
 - `/score` – Show total goals and penalties.
-- `/leaderboard` – Show GOALs and PENALTYs for all users in the group.
+- `/leaderboard` – Show GOALs and PENALTYs for all users in the group (all topics).
 
 ## Setup
 1. Create a Telegram bot and get a token.
@@ -40,7 +40,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
    ```
 
 ## Notes
-- Deadlines are interpreted in **UTC** and apply to everyone in the same group.
+- Deadlines are interpreted in **UTC**, apply to everyone in the same group, and persist until changed by an admin.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.
 - The bot can be added to groups and topic groups; it tracks tasks per user inside each topic.
 - After the deadline passes, the bot posts a daily score summary in the group for that date.
