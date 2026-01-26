@@ -146,7 +146,13 @@ def get_chat_deadline(conn: sqlite3.Connection, chat_id: int, thread_id: int) ->
         "SELECT deadline_time FROM chats WHERE chat_id = ? AND thread_id = ?",
         (chat_id, thread_id),
     ).fetchone()
-    return row[0] if row else None
+    if row and row[0]:
+        return row[0]
+    fallback = conn.execute(
+        "SELECT deadline_time FROM chats WHERE chat_id = ? AND thread_id = ?",
+        (chat_id, DEFAULT_THREAD_ID),
+    ).fetchone()
+    return fallback[0] if fallback else None
 
 
 def set_chat_deadline(
@@ -266,7 +272,7 @@ def help_text() -> str:
         "Commands:\n"
         "/start - Welcome message\n"
         "/help - Show this help\n"
-        "/setdeadline HH:MM (UTC) - Set the daily deadline (admin only)\n"
+        "/setdeadline HH:MM (UTC) - Set the daily deadline (admin only, all topics)\n"
         "/tasks YYYY-MM-DD + tasks on new lines - Save daily tasks\n"
         "/done YYYY-MM-DD TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status YYYY-MM-DD - Show task status and result\n"
@@ -327,6 +333,9 @@ def build_daily_report(
         return None
 
     for user in user_rows:
+        tasks = fetch_tasks(conn, user["user_id"], chat_id, thread_id, date_text)
+        if not tasks:
+            continue
         result = evaluate_daily_result(
             conn,
             user["user_id"],
@@ -338,7 +347,11 @@ def build_daily_report(
         if not result:
             continue
         outcome = "+1 GOAL ✅" if result.goal == 1 else "+1 PENALTY ❌"
-        entries.append(f"- {format_user_label(user)}: {outcome}")
+        task_lines = [
+            f"    {('✅' if task['completed'] == 1 else '❌')} {task['task_index']}. {task['description']}"
+            for task in tasks
+        ]
+        entries.append("\n".join([f"- {format_user_label(user)}: {outcome}", *task_lines]))
 
     if not entries:
         return None
@@ -408,7 +421,7 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Invalid time. Use HH:MM (24h).")
         return
 
-    thread_id = get_thread_id(update)
+    thread_id = DEFAULT_THREAD_ID
     member = await context.bot.get_chat_member(
         update.effective_chat.id, update.effective_user.id
     )

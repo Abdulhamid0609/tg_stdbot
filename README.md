@@ -12,7 +12,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 ## Commands
 - `/start` – Introduction and quick help.
 - `/help` – Command list.
-- `/setdeadline HH:MM` – Set a daily deadline time (24h, UTC). Admin-only in groups.
+- `/setdeadline HH:MM` – Set a daily deadline time (24h, UTC). Admin-only in groups and applies to all topics.
 - `/tasks YYYY-MM-DD` followed by new lines for each task. Example:
   ```
   /tasks 2026-01-23
@@ -37,7 +37,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
    ```
 
 ## Notes
-- Deadlines are interpreted in **UTC** and apply to everyone in the same group topic.
+- Deadlines are interpreted in **UTC** and apply to everyone in the same group.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.
 - The bot can be added to groups and topic groups; it tracks tasks per user inside each topic.
 - After the deadline passes, the bot posts a daily score summary in the group for that date.
