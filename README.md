@@ -22,8 +22,8 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
   ```
 - `/done [YYYY-MM-DD] TASK_NUMBER proof text` – Mark a task done with proof or attach a photo and reply with `/done` (rejected after the deadline).
 - `/status [YYYY-MM-DD]` – Show task completion status and daily result.
-- `/status @nickname` – (Admin only) View another user’s status for today.
-- `/status all` – (Admin only) View all users’ status for today.
+- `/status @nickname [YYYY-MM-DD]` – (Admin only) View another user’s status.
+- `/status all [YYYY-MM-DD]` – (Admin only) View all users’ status.
 - `/score` – Show total goals and penalties.
 
 ## Setup
