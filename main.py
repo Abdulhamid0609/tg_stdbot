@@ -449,9 +449,9 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = (
         "Welcome to Carpe Diem!\n"
-        "Use /setdeadline HH:MM (UTC) to set your daily deadline.\n"
-        "Send tasks with /tasks YYYY-MM-DD followed by each task on a new line.\n"
-        "Mark tasks done with /done YYYY-MM-DD TASK_NUMBER proof text.\n"
+        "Use /setdeadline HH:MM (UTC) to set the daily deadline (admin only).\n"
+        "Send tasks with /tasks [YYYY-MM-DD] followed by each task on a new line.\n"
+        "Mark tasks done with /done [YYYY-MM-DD] TASK_NUMBER proof text.\n"
         "Use /help for the full command list."
     )
     await update.message.reply_text(message)
