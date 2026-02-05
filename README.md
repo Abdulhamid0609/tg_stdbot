@@ -39,26 +39,25 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
    python main.py
    ```
 
-## Free Hosting (Always-On via Google Cloud Always Free)
-If you need a free always-on cloud option, use a Google Cloud **Always Free** `e2-micro` VM (selected regions). This is separate from the 90-day trial credits.
+## Free Hosting (via justrunmy.app)
+If you want a simpler free cloud deployment path, use [justrunmy.app](https://justrunmy.app/) and run the bot as a background Python service.
 
-1. Create a Google Cloud account and project.
-2. In **Compute Engine**, create an Ubuntu `e2-micro` VM in an Always Free region (for example `us-west1`, `us-central1`, or `us-east1`).
-3. SSH into the VM and install Python 3.11+ and Git.
-4. Clone this repository to the VM.
-5. Install dependencies:
+1. Create an account on justrunmy.app.
+2. Create a new app/service from your repository.
+3. Set the start command to:
+   ```bash
+   python main.py
+   ```
+4. Add environment variables in the platform dashboard:
+   - `TELEGRAM_BOT_TOKEN=<your-token>`
+   - `CARPE_DIEM_DB=/workspace/carpe_diem.sqlite3` (or the platform's persistent path, if available)
+5. Install dependencies during build/deploy with:
    ```bash
    pip install -r requirements.txt
    ```
-6. Set environment variables:
-   ```bash
-   export TELEGRAM_BOT_TOKEN="<your-token>"
-   export CARPE_DIEM_DB="$HOME/carpe_diem.sqlite3"
-   ```
-7. Create a `systemd` service for auto-start and auto-restart.
-8. Put the same environment variables in the `systemd` service file so the bot survives reboot.
+6. Deploy and confirm logs show the bot polling successfully.
 
-This provides a practical free 24/7 cloud deployment path when used within Always Free limits.
+If the free tier enforces sleep or runtime limits, upgrade or move to a VM-based Always Free option.
 
 ## Notes
 - Deadlines are interpreted in **UTC** and apply to everyone in the same group.
