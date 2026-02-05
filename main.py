@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 DB_PATH = os.environ.get("CARPE_DIEM_DB", "carpe_diem.sqlite3")
 DEFAULT_THREAD_ID = 0
@@ -636,14 +636,20 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command_text = get_command_text(update)
     args = context.args if context.args else parse_args_from_text(command_text)
-    target = args[0] if args else ""
-    parsed_date = parse_optional_date(target)
-    if parsed_date:
-        date_text = format_date(parsed_date)
-        target_arg = args[1] if len(args) > 1 else ""
-    else:
-        date_text = format_date(utc_now().date())
-        target_arg = target
+    date_text = format_date(utc_now().date())
+    target_arg = ""
+    if args:
+        first = args[0]
+        parsed_date = parse_optional_date(first)
+        if parsed_date:
+            date_text = format_date(parsed_date)
+            target_arg = args[1] if len(args) > 1 else ""
+        else:
+            target_arg = first
+            if len(args) > 1:
+                parsed_date = parse_optional_date(args[1])
+                if parsed_date:
+                    date_text = format_date(parsed_date)
 
     task_date = parse_date(date_text)
 
@@ -803,6 +809,9 @@ def main() -> None:
     application.add_handler(CommandHandler("setdeadline", set_deadline))
     application.add_handler(CommandHandler("tasks", tasks))
     application.add_handler(CommandHandler("done", done))
+    application.add_handler(
+        MessageHandler(filters.PHOTO & filters.CaptionRegex(r"^/done"), done)
+    )
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("score", score))
 
