@@ -39,25 +39,26 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
    python main.py
    ```
 
-## Free Hosting (Always-On via Oracle Cloud Free Tier)
-If you need a free always-on option, use an Oracle Cloud Free Tier VM.
+## Free Hosting (Always-On via Google Cloud Always Free)
+If you need a free always-on cloud option, use a Google Cloud **Always Free** `e2-micro` VM (selected regions). This is separate from the 90-day trial credits.
 
-1. Create an Oracle Cloud account and create an **Always Free** Ubuntu VM.
-2. SSH into the VM and install Python 3.11+ and Git.
-3. Clone this repository to the VM.
-4. Install dependencies:
+1. Create a Google Cloud account and project.
+2. In **Compute Engine**, create an Ubuntu `e2-micro` VM in an Always Free region (for example `us-west1`, `us-central1`, or `us-east1`).
+3. SSH into the VM and install Python 3.11+ and Git.
+4. Clone this repository to the VM.
+5. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-5. Set environment variables:
+6. Set environment variables:
    ```bash
    export TELEGRAM_BOT_TOKEN="<your-token>"
    export CARPE_DIEM_DB="$HOME/carpe_diem.sqlite3"
    ```
-6. Run the bot with `screen`/`tmux` or create a `systemd` service for auto-restart.
-7. For reboot persistence, configure the same env vars in the service file.
+7. Create a `systemd` service for auto-start and auto-restart.
+8. Put the same environment variables in the `systemd` service file so the bot survives reboot.
 
-This gives a practical free 24/7 deployment path.
+This provides a practical free 24/7 cloud deployment path when used within Always Free limits.
 
 ## Notes
 - Deadlines are interpreted in **UTC** and apply to everyone in the same group.
