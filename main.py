@@ -714,9 +714,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     task_date,
                     deadline_time,
                 )
-                outcome = (
-                    "GOAL ✅" if result and result.goal == 1 else "PENALTY ❌"
-                )
+                if result:
+                    outcome = "GOAL ✅" if result.goal == 1 else "PENALTY ❌"
+                else:
+                    outcome = "pending ⏳"
                 sections.append(
                     "\n".join(
                         [
