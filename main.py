@@ -656,6 +656,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     thread_id = get_thread_id(update)
 
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
         update_user_profile(conn, update.effective_user)
         if target_arg in {"all"} or target_arg.startswith("@"):
             member = await context.bot.get_chat_member(
