@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 DB_PATH = os.environ.get("CARPE_DIEM_DB", "carpe_diem.sqlite3")
 DEFAULT_THREAD_ID = 0
 REPORT_CHECK_MINUTES = 10
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -910,9 +913,17 @@ def main() -> None:
     application.add_handler(CommandHandler("score", score))
     application.add_handler(CommandHandler("leaderboard", leaderboard))
 
-    application.job_queue.run_repeating(
-        send_daily_reports, interval=REPORT_CHECK_MINUTES * 60, first=REPORT_CHECK_MINUTES * 60
-    )
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            send_daily_reports,
+            interval=REPORT_CHECK_MINUTES * 60,
+            first=REPORT_CHECK_MINUTES * 60,
+        )
+    else:
+        LOGGER.warning(
+            "JobQueue is unavailable. Install python-telegram-bot[job-queue] to enable daily reports."
+        )
+
     application.run_polling()
 
 
