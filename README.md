@@ -39,6 +39,26 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
    python main.py
    ```
 
+## Free Hosting (Always-On via Oracle Cloud Free Tier)
+If you need a free always-on option, use an Oracle Cloud Free Tier VM.
+
+1. Create an Oracle Cloud account and create an **Always Free** Ubuntu VM.
+2. SSH into the VM and install Python 3.11+ and Git.
+3. Clone this repository to the VM.
+4. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+5. Set environment variables:
+   ```bash
+   export TELEGRAM_BOT_TOKEN="<your-token>"
+   export CARPE_DIEM_DB="$HOME/carpe_diem.sqlite3"
+   ```
+6. Run the bot with `screen`/`tmux` or create a `systemd` service for auto-restart.
+7. For reboot persistence, configure the same env vars in the service file.
+
+This gives a practical free 24/7 deployment path.
+
 ## Notes
 - Deadlines are interpreted in **UTC** and apply to everyone in the same group.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.

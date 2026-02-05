@@ -619,6 +619,8 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     proof_message_id = proof_message.message_id if proof_message else update.effective_message.message_id
 
     thread_id = get_thread_id(update)
+    all_done_now = False
+    total_tasks = 0
 
     with sqlite3.connect(DB_PATH) as conn:
         update_user_profile(conn, update.effective_user)
@@ -658,9 +660,23 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             (proof if proof else None, photo_file_id, proof_message_id, row[0]),
         )
 
+        tasks_list = fetch_tasks(
+            conn,
+            update.effective_user.id,
+            update.effective_chat.id,
+            thread_id,
+            date_text,
+        )
+        total_tasks = len(tasks_list)
+        all_done_now = bool(tasks_list) and all(task["completed"] == 1 for task in tasks_list)
+
     await update.message.reply_text(
         f"Marked task {task_number} done for {date_text}."
     )
+    if all_done_now:
+        await update.message.reply_text(
+            f"🎉 All done for {date_text}! You completed all {total_tasks} task(s)."
+        )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
