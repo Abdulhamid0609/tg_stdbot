@@ -25,6 +25,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 - `/status @nickname [YYYY-MM-DD]` – (Admin only) View another user’s status.
 - `/status all [YYYY-MM-DD]` – (Admin only) View all users’ status.
 - `/score` – Show total goals and penalties.
+- `/leaderboard` – Show GOALs and PENALTYs for all users in the group.
 
 ## Setup
 1. Create a Telegram bot and get a token.

@@ -294,7 +294,8 @@ def help_text() -> str:
         "/tasks [YYYY-MM-DD] + tasks on new lines - Save daily tasks\n"
         "/done [YYYY-MM-DD] TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status [YYYY-MM-DD|@user|all] - Show task status and result\n"
-        "/score - Show total goals and penalties"
+        "/score - Show total goals and penalties\n"
+        "/leaderboard - Show top goals and penalties"
     )
 
 
@@ -463,7 +464,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.message.reply_text("Usage: /setdeadline HH:MM")
+        await update.message.reply_text(
+            "Usage: /setdeadline HH:MM\nExample: /setdeadline 20:00"
+        )
         return
 
     try:
@@ -557,7 +560,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command_text = get_command_text(update)
     args = context.args if context.args else parse_args_from_text(command_text)
     if len(args) < 1:
-        await update.message.reply_text("Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text")
+        await update.message.reply_text(
+            "Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text\nExample: /done 1 Finished chapter 5"
+        )
         return
 
     parsed_date = parse_optional_date(args[0])
@@ -569,7 +574,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         task_arg_index = 0
 
     if len(args) <= task_arg_index:
-        await update.message.reply_text("Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text")
+        await update.message.reply_text(
+            "Usage: /done [YYYY-MM-DD] TASK_NUMBER proof text\nExample: /done 1 Finished chapter 5"
+        )
         return
 
     task_number_text = args[task_arg_index]
@@ -578,7 +585,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     task_date = parse_date(date_text)
 
     if not task_number_text.isdigit():
-        await update.message.reply_text("Task number must be numeric.")
+        await update.message.reply_text(
+            "Task number must be numeric. Example: /done 2 Completed the run"
+        )
         return
 
     task_number = int(task_number_text)
@@ -686,7 +695,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 (update.effective_chat.id, thread_id, date_text),
             ).fetchall()
             if not user_rows:
-                await update.message.reply_text("No tasks saved for that date.")
+                await update.message.reply_text(
+                    "No tasks saved for that date. Use /tasks to add tasks first."
+                )
                 return
             sections = []
             for user in user_rows:
@@ -738,7 +749,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             date_text,
         )
         if not tasks_list:
-            await update.message.reply_text("No tasks saved for that date.")
+            await update.message.reply_text(
+                "No tasks saved for that date. Use /tasks to add tasks first."
+            )
             return
 
         result = evaluate_daily_result(
@@ -798,6 +811,38 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    thread_id = get_thread_id(update)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT results.user_id,
+                   SUM(results.goal) AS goals,
+                   SUM(results.penalty) AS penalties,
+                   users.username,
+                   users.first_name,
+                   users.last_name
+            FROM results
+            LEFT JOIN users ON users.user_id = results.user_id
+            WHERE results.chat_id = ? AND results.thread_id = ?
+            GROUP BY results.user_id
+            ORDER BY goals DESC, penalties ASC, results.user_id ASC
+            """,
+            (update.effective_chat.id, thread_id),
+        ).fetchall()
+
+    if not rows:
+        await update.message.reply_text("No results yet. Check back after the deadline.")
+        return
+
+    lines = ["Leaderboard (GOALs / PENALTYs):"]
+    for idx, row in enumerate(rows, start=1):
+        label = format_user_label(row)
+        lines.append(f"{idx}. {label} — {row['goals']} / {row['penalties']}")
+    await update.message.reply_text("\n".join(lines))
+
+
 def main() -> None:
     init_db()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -815,6 +860,7 @@ def main() -> None:
     )
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("score", score))
+    application.add_handler(CommandHandler("leaderboard", leaderboard))
 
     application.job_queue.run_repeating(
         send_daily_reports, interval=REPORT_CHECK_MINUTES * 60, first=REPORT_CHECK_MINUTES * 60
