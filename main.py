@@ -315,7 +315,7 @@ def help_text() -> str:
         "/start - Welcome message\n"
         "/help - Show this help\n"
         "/setdeadline HH:MM (UTC) - Set the group deadline once (admin only, all topics)\n"
-        "/tasks [YYYY-MM-DD] + tasks on new lines - Save daily tasks\n"
+        "/tasks [YYYY-MM-DD] + tasks on new lines - Add tasks for the day\n"
         "/done [YYYY-MM-DD] TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status [YYYY-MM-DD|@user|all] - Show task status and result (all topics)\n"
         "/score - Show total goals and penalties\n"
@@ -552,16 +552,22 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "Set a deadline first with /setdeadline HH:MM (admin only)."
             )
             return
-        conn.execute(
-            "DELETE FROM tasks WHERE user_id = ? AND chat_id = ? AND thread_id = ? AND date = ?",
+        row = conn.execute(
+            """
+            SELECT COALESCE(MAX(task_index), 0)
+            FROM tasks
+            WHERE user_id = ? AND chat_id = ? AND thread_id = ? AND date = ?
+            """,
             (
                 update.effective_user.id,
                 update.effective_chat.id,
                 thread_id,
                 date_text,
             ),
-        )
-        for index, task in enumerate(task_lines, start=1):
+        ).fetchone()
+        start_index = (row[0] if row else 0) + 1
+
+        for offset, task in enumerate(task_lines, start=0):
             conn.execute(
                 "INSERT INTO tasks (user_id, chat_id, thread_id, date, task_index, description)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
@@ -570,13 +576,13 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     update.effective_chat.id,
                     thread_id,
                     date_text,
-                    index,
+                    start_index + offset,
                     task,
                 ),
             )
 
     await update.message.reply_text(
-        f"Saved {len(task_lines)} task(s) for {date_text}."
+        f"Added {len(task_lines)} task(s) for {date_text}."
     )
 
 
