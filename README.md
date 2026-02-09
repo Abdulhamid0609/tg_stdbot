@@ -59,6 +59,8 @@ If you want a simpler free cloud deployment path, use [justrunmy.app](https://ju
 
 If the free tier enforces sleep or runtime limits, upgrade or move to a VM-based Always Free option.
 
+> Tip: make sure `CARPE_DIEM_DB` points to persistent storage so daily reports and leaderboard history are not lost between restarts.
+
 ## Notes
 - Deadlines are interpreted in **UTC** and apply to everyone in the same group.
 - Daily results are calculated after the deadline when you request `/status` or `/score`.

@@ -872,6 +872,26 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        deadline_text = get_chat_deadline(conn, update.effective_chat.id, DEFAULT_THREAD_ID)
+        if deadline_text:
+            deadline_time = parse_time(deadline_text)
+            task_rows = conn.execute(
+                """
+                SELECT DISTINCT user_id, thread_id, date
+                FROM tasks
+                WHERE chat_id = ?
+                """,
+                (update.effective_chat.id,),
+            ).fetchall()
+            for row in task_rows:
+                evaluate_daily_result(
+                    conn,
+                    row["user_id"],
+                    update.effective_chat.id,
+                    row["thread_id"],
+                    parse_date(row["date"]),
+                    deadline_time,
+                )
         rows = conn.execute(
             """
             SELECT results.user_id,
