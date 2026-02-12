@@ -86,6 +86,19 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                goal_delta INTEGER NOT NULL DEFAULT 0,
+                penalty_delta INTEGER NOT NULL DEFAULT 0,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         ensure_column(conn, "users", "username", "TEXT")
         ensure_column(conn, "users", "first_name", "TEXT")
         ensure_column(conn, "users", "last_name", "TEXT")
@@ -239,6 +252,34 @@ def fetch_results(
     return [DailyResult(date=row[0], goal=row[1], penalty=row[2]) for row in rows]
 
 
+def fetch_adjustment_totals(conn: sqlite3.Connection, user_id: int, chat_id: int) -> tuple[int, int]:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(goal_delta), 0), COALESCE(SUM(penalty_delta), 0)
+        FROM adjustments
+        WHERE user_id = ? AND chat_id = ?
+        """,
+        (user_id, chat_id),
+    ).fetchone()
+    if not row:
+        return 0, 0
+    return row[0], row[1]
+
+
+def resolve_target_user_id(conn: sqlite3.Connection, target: str) -> int | None:
+    target_value = target.strip()
+    if target_value.startswith("@"):
+        username = target_value.lstrip("@")
+        row = conn.execute(
+            "SELECT user_id FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return row[0] if row else None
+    if target_value.isdigit():
+        return int(target_value)
+    return None
+
+
 def evaluate_daily_result(
     conn: sqlite3.Connection,
     user_id: int,
@@ -319,7 +360,8 @@ def help_text() -> str:
         "/done [YYYY-MM-DD] TASK_NUMBER proof - Mark a task done (photos supported)\n"
         "/status [YYYY-MM-DD|@user|all] - Show task status and result (all topics)\n"
         "/score - Show total goals and penalties\n"
-        "/leaderboard - Show top goals and penalties (all topics)"
+        "/leaderboard - Show top goals and penalties (all topics)\n"
+        "/addscore @user GOALS PENALTIES [note] - Admin score restore"
     )
 
 
@@ -449,15 +491,19 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id = row["chat_id"]
             thread_id = row["thread_id"]
             date_text = row["date"]
-            existing = conn.execute(
-                "SELECT 1 FROM reports WHERE chat_id = ? AND thread_id = ? AND date = ?",
+            reserved = conn.execute(
+                "INSERT OR IGNORE INTO reports (chat_id, thread_id, date) VALUES (?, ?, ?)",
                 (chat_id, thread_id, date_text),
-            ).fetchone()
-            if existing:
+            )
+            if reserved.rowcount == 0:
                 continue
 
             report = build_daily_report(conn, chat_id, thread_id, date_text)
             if not report:
+                conn.execute(
+                    "DELETE FROM reports WHERE chat_id = ? AND thread_id = ? AND date = ?",
+                    (chat_id, thread_id, date_text),
+                )
                 continue
 
             report_text, _ = report
@@ -465,10 +511,6 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
             if thread_id != DEFAULT_THREAD_ID:
                 kwargs["message_thread_id"] = thread_id
             await context.bot.send_message(**kwargs)
-            conn.execute(
-                "INSERT INTO reports (chat_id, thread_id, date) VALUES (?, ?, ?)",
-                (chat_id, thread_id, date_text),
-            )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -864,8 +906,16 @@ async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     goals = sum(result.goal for result in results)
     penalties = sum(result.penalty for result in results)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        goal_adjust, penalty_adjust = fetch_adjustment_totals(
+            conn, update.effective_user.id, update.effective_chat.id
+        )
+
+    total_goals = goals + goal_adjust
+    total_penalties = penalties + penalty_adjust
     await update.message.reply_text(
-        f"Total: {goals} GOAL(s), {penalties} PENALTY(ies)."
+        f"Total: {total_goals} GOAL(s), {total_penalties} PENALTY(ies)."
     )
 
 
@@ -894,19 +944,31 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
         rows = conn.execute(
             """
-            SELECT results.user_id,
-                   SUM(results.goal) AS goals,
-                   SUM(results.penalty) AS penalties,
+            SELECT totals.user_id,
+                   totals.goals,
+                   totals.penalties,
                    users.username,
                    users.first_name,
                    users.last_name
-            FROM results
-            LEFT JOIN users ON users.user_id = results.user_id
-            WHERE results.chat_id = ?
-            GROUP BY results.user_id
-            ORDER BY goals DESC, penalties ASC, results.user_id ASC
+            FROM (
+                SELECT user_id,
+                       SUM(goal_value) AS goals,
+                       SUM(penalty_value) AS penalties
+                FROM (
+                    SELECT user_id, goal AS goal_value, penalty AS penalty_value
+                    FROM results
+                    WHERE chat_id = ?
+                    UNION ALL
+                    SELECT user_id, goal_delta AS goal_value, penalty_delta AS penalty_value
+                    FROM adjustments
+                    WHERE chat_id = ?
+                ) merged
+                GROUP BY user_id
+            ) totals
+            LEFT JOIN users ON users.user_id = totals.user_id
+            ORDER BY totals.goals DESC, totals.penalties ASC, totals.user_id ASC
             """,
-            (update.effective_chat.id,),
+            (update.effective_chat.id, update.effective_chat.id),
         ).fetchall()
 
     if not rows:
@@ -918,6 +980,67 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         label = format_user_label(row)
         lines.append(f"{idx}. {label} — {row['goals']} / {row['penalties']}")
     await update.message.reply_text("\n".join(lines))
+
+
+async def add_score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Usage: /addscore @username GOALS PENALTIES [note]\n"
+            "Example: /addscore @abdulhamid 2 1 restored after restart"
+        )
+        return
+
+    member = await context.bot.get_chat_member(
+        update.effective_chat.id, update.effective_user.id
+    )
+    if not user_is_admin(member):
+        await update.message.reply_text("Only admins can adjust scores.")
+        return
+
+    target, goals_text, penalties_text = context.args[:3]
+    note = " ".join(context.args[3:]).strip() if len(context.args) > 3 else None
+
+    if not goals_text.lstrip("-").isdigit() or not penalties_text.lstrip("-").isdigit():
+        await update.message.reply_text("GOALS and PENALTIES must be integers.")
+        return
+
+    goal_delta = int(goals_text)
+    penalty_delta = int(penalties_text)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        update_user_profile(conn, update.effective_user)
+        user_id = resolve_target_user_id(conn, target)
+        if user_id is None:
+            await update.message.reply_text(
+                "User not found. Use @username already seen by the bot or numeric user_id."
+            )
+            return
+
+        conn.execute(
+            """
+            INSERT INTO adjustments (user_id, chat_id, goal_delta, penalty_delta, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                update.effective_chat.id,
+                goal_delta,
+                penalty_delta,
+                note,
+                utc_now().isoformat(),
+            ),
+        )
+
+        label_row = conn.execute(
+            "SELECT user_id, username, first_name, last_name FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        label = format_user_label(label_row) if label_row else f"User {user_id}"
+
+    await update.message.reply_text(
+        f"Adjusted {label}: GOAL {goal_delta:+d}, PENALTY {penalty_delta:+d}."
+    )
 
 
 def main() -> None:
@@ -938,6 +1061,7 @@ def main() -> None:
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("score", score))
     application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CommandHandler("addscore", add_score))
 
     if application.job_queue:
         application.job_queue.run_repeating(

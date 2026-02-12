@@ -26,6 +26,7 @@ This repository contains a simple Telegram bot for tracking daily tasks, proofs,
 - `/status all [YYYY-MM-DD]` – (Admin only) View all users’ status across all topics.
 - `/score` – Show total goals and penalties.
 - `/leaderboard` – Show GOALs and PENALTYs for all users in the group across all topics.
+- `/addscore @nickname GOALS PENALTIES [note]` – (Admin only) Manually adjust a user's GOAL/PENALTY totals (useful after accidental data loss).
 
 ## Setup
 1. Create a Telegram bot and get a token.
@@ -66,4 +67,5 @@ If the free tier enforces sleep or runtime limits, upgrade or move to a VM-based
 - Daily results are calculated after the deadline when you request `/status` or `/score`.
 - The bot can be added to groups and topic groups; it tracks tasks per user inside each topic, while admin status/leaderboard commands aggregate across topics.
 - After the deadline passes, the bot posts a daily score summary in the group for that date.
+- Report deduplication is stored in the `reports` table, so persistent `CARPE_DIEM_DB` storage is required to avoid repeats after restart.
 - Status output shows proof message links instead of full proof text.
