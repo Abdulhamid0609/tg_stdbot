@@ -497,6 +497,7 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             if reserved.rowcount == 0:
                 continue
+            conn.commit()
 
             report = build_daily_report(conn, chat_id, thread_id, date_text)
             if not report:
@@ -504,13 +505,30 @@ async def send_daily_reports(context: ContextTypes.DEFAULT_TYPE) -> None:
                     "DELETE FROM reports WHERE chat_id = ? AND thread_id = ? AND date = ?",
                     (chat_id, thread_id, date_text),
                 )
+                conn.commit()
                 continue
 
             report_text, _ = report
             kwargs = {"chat_id": chat_id, "text": report_text}
             if thread_id != DEFAULT_THREAD_ID:
                 kwargs["message_thread_id"] = thread_id
-            await context.bot.send_message(**kwargs)
+            try:
+                await context.bot.send_message(**kwargs)
+            except Exception:
+                conn.execute(
+                    "DELETE FROM reports WHERE chat_id = ? AND thread_id = ? AND date = ?",
+                    (chat_id, thread_id, date_text),
+                )
+                conn.commit()
+                LOGGER.exception(
+                    "Failed to send daily report for chat=%s thread=%s date=%s",
+                    chat_id,
+                    thread_id,
+                    date_text,
+                )
+                continue
+
+            conn.commit()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
