@@ -1,0 +1,4 @@
+carpe_diem.sqlite3
+__pycache__/
+*.pyc
+.env
